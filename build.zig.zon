@@ -5,7 +5,7 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .make = .{
-            .url = "https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz",
+            .url = "https://ftpmirror.gnu.org/make/make-4.4.1.tar.gz",
             .hash = "N-V-__8AAO76hQBfZsum_DO5EZUzn1Bhfyix3mKAatVWJH40",
         },
     },
