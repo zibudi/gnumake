@@ -41,6 +41,9 @@ pub fn build(b: *std.Build) void {
                 .HAVE_UNISTD_H = 1,
                 .HAVE_FCNTL_H = 1,
                 .HAVE_STPCPY = 1,
+                .MAKE_JOBSERVER = 1,
+                .HAVE_PIPE = 1,
+                .HAVE_MKFIFO = 1,
             }),
         }
         if (target_has_sys_siglist(target)) {
