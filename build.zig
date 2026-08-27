@@ -7,20 +7,24 @@ pub fn build(b: *std.Build) void {
     const make_dep = b.dependency("make", .{});
     const make_root = make_dep.path(".");
 
-    const make_exe= blk: {
-        const exe = b.addExecutable(.{
-            .name = "make",
+    const make_exe = blk: {
+        const mod = b.createModule(.{
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
+        });
+        const exe = b.addExecutable(.{
+            .name = "make",
+            .root_module = mod,
         });
 
-        exe.addIncludePath(b.path("inc"));
-        exe.addIncludePath(make_dep.path("src"));
+        mod.addIncludePath(b.path("inc"));
+        mod.addIncludePath(make_dep.path("src"));
         if (target.result.os.tag == .windows) {
-            exe.addIncludePath(make_dep.path("src/w32/include"));
+            mod.addIncludePath(make_dep.path("src/w32/include"));
         }
         const config_header = b.addConfigHeader(.{
-            .style = .{ .autoconf = make_dep.path("src/config.h.in") },
+            .style = .{ .autoconf_undef = make_dep.path("src/config.h.in") },
             .include_path = "config.h",
         }, make_config);
         switch (target.result.os.tag) {
@@ -43,7 +47,7 @@ pub fn build(b: *std.Build) void {
             config_header.addValues(.{
                 .HAVE_DECL_SYS_SIGLIST = 1,
             });
-            exe.defineCMacro("SYS_SIGLIST_DECLARED", "1");
+            mod.addCMacro("SYS_SIGLIST_DECLARED", "1");
         } else {
             config_header.addValues(.{
                 .HAVE_DECL_SYS_SIGLIST = 0,
@@ -51,33 +55,33 @@ pub fn build(b: *std.Build) void {
         }
 
         if (target.result.os.tag == .windows) {
-            exe.defineCMacro("_POSIX_", "1");
-            exe.defineCMacro("putenv", "_putenv");
-            exe.defineCMacro("getpid", "_getpid");
-            exe.defineCMacro("fdopen", "_fdopen");
-            exe.defineCMacro("environ", "(*__p__environ())");
+            mod.addCMacro("_POSIX_", "1");
+            mod.addCMacro("putenv", "_putenv");
+            mod.addCMacro("getpid", "_getpid");
+            mod.addCMacro("fdopen", "_fdopen");
+            mod.addCMacro("environ", "(*__p__environ())");
         } else {
             // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-            exe.defineCMacro("LOCALEDIR", "\".\"");
+            mod.addCMacro("LOCALEDIR", "\".\"");
             // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-            exe.defineCMacro("LIBDIR", "\"lib\"");
+            mod.addCMacro("LIBDIR", "\"lib\"");
         }
         if (target.result.isGnuLibC()) {
             // TODO: only do this if we are compiling against gnu
-            //exe.defineCMacro("__USE_GNU", "1");
-            exe.defineCMacro("_GNU_SOURCE", "1");
+            //mod.addCMacro("__USE_GNU", "1");
+            mod.addCMacro("_GNU_SOURCE", "1");
         }
         const write_files = b.addWriteFiles();
         _ = write_files.addCopyFile(b.path("mkcustom.h"), "src/mkcustom.h");
         if (target.result.os.tag == .windows) {
             _ = write_files.addCopyFile(make_dep.path("src/config.h.W32"), "src/config.h");
         } else {
-            _ = write_files.addCopyFile(config_header.getOutput(), "src/config.h");
+            _ = write_files.addCopyFile(config_header.getOutputFile(), "src/config.h");
         }
 
-        exe.addIncludePath(write_files.getDirectory().path(b, "src"));
+        mod.addIncludePath(write_files.getDirectory().path(b, "src"));
 
-        exe.addCSourceFiles(.{
+        mod.addCSourceFiles(.{
             .root = make_root,
             .files = switch (target.result.os.tag) {
                 .windows => &make_files_windows,
@@ -97,7 +101,6 @@ pub fn build(b: *std.Build) void {
             },
             else => {},
         }
-        exe.linkLibC();
         linkGlob(b, target, optimize, make_dep, exe);
 
         b.installArtifact(exe);
@@ -123,93 +126,89 @@ pub fn build(b: *std.Build) void {
 }
 
 fn target_has_sys_siglist(t: std.Build.ResolvedTarget) bool {
-    if (t.result.isDarwin()) return true;
+    if (t.result.os.tag.isDarwin()) return true;
     if (t.result.isGnuLibC()) {
-        const vr = t.result.os.getVersionRange();
+        const glibc = t.result.os.version_range.linux.glibc;
         // newer glibc does not allow linking with sys_siglist
         // https://lists.gnu.org/archive/html/info-gnu/2020-08/msg00002.html
-        if (vr == .linux and vr.linux.glibc.major >= 2 and vr.linux.glibc.minor >= 32)
+        if (glibc.major >= 2 and glibc.minor >= 32)
             return false;
         return true;
     }
     return false;
 }
 
-fn linkGlob(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-    make_dep: *std.Build.Dependency,
-    make_exe: *std.Build.Step.Compile
-) void {
+fn linkGlob(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, make_dep: *std.Build.Dependency, make_exe: *std.Build.Step.Compile) void {
     if (target.result.os.tag != .windows)
         return;
 
-    const lib = b.addStaticLibrary(.{
-        .name = "glob",
+    const lib_mod = b.createModule(.{
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
+    });
+    const lib = b.addLibrary(.{
+        .name = "glob",
+        .linkage = .static,
+        .root_module = lib_mod,
     });
     const config_header = b.addConfigHeader(.{
-        .style = .{ .autoconf = make_dep.path("lib/glob.in.h") },
+        .style = .{ .autoconf_at = make_dep.path("lib/glob.in.h") },
         .include_path = "glob.h",
     }, .{});
-    lib.addConfigHeader(config_header);
+    lib_mod.addConfigHeader(config_header);
     lib.installConfigHeader(config_header);
 
     const fnmatch_header = b.addConfigHeader(.{
-        .style = .{ .autoconf = make_dep.path("lib/fnmatch.in.h") },
+        .style = .{ .autoconf_at = make_dep.path("lib/fnmatch.in.h") },
         .include_path = "fnmatch.h",
-        }, .{
-	.FNM_PATHNAME = null,
-	.FNM_NOESCAPE = null,
-	.FNM_PERIOD = null,
+    }, .{
+        .FNM_PATHNAME = null,
+        .FNM_NOESCAPE = null,
+        .FNM_PERIOD = null,
     });
-    lib.addConfigHeader(fnmatch_header);
-    make_exe.addConfigHeader(fnmatch_header);
+    lib_mod.addConfigHeader(fnmatch_header);
+    make_exe.root_module.addConfigHeader(fnmatch_header);
 
     const write_files = b.addWriteFiles();
     _ = write_files.addCopyFile(make_dep.path("src/config.h.W32"), "src/config.h");
-    lib.defineCMacro("HAVE_CONFIG_H", "1");
-    lib.addIncludePath(make_dep.path("src"));
-    lib.addIncludePath(make_dep.path("lib"));
-    lib.addIncludePath(write_files.getDirectory().path(b, "src"));
+    lib_mod.addCMacro("HAVE_CONFIG_H", "1");
+    lib_mod.addIncludePath(make_dep.path("src"));
+    lib_mod.addIncludePath(make_dep.path("lib"));
+    lib_mod.addIncludePath(write_files.getDirectory().path(b, "src"));
 
-    lib.addCSourceFiles(.{
+    lib_mod.addCSourceFiles(.{
         .root = make_dep.path("."),
         .files = &.{
             "lib/fnmatch.c",
             "lib/glob.c",
         },
     });
-    lib.linkLibC();
 
-    make_exe.linkLibrary(lib);
+    make_exe.root_module.linkLibrary(lib);
 }
 
 const make_files_common = [_][]const u8{
-    "src/ar.c", "src/arscan.c", "src/commands.c",
-    "src/default.c", "src/dir.c", "src/expand.c",
-    "src/file.c", "src/function.c", "src/getopt.c",
-    "src/getopt1.c", "src/guile.c",
-    "src/hash.c", "src/implicit.c", "src/job.c",
-    "src/load.c", "src/loadapi.c", "src/main.c", "src/misc.c",
-    "src/output.c", "src/read.c",
-    "src/remake.c", "src/rule.c", "src/shuffle.c",
-    "src/signame.c", "src/strcache.c", "src/variable.c",
-    "src/version.c", "src/vpath.c",
+    "src/ar.c",       "src/arscan.c",      "src/commands.c",
+    "src/default.c",  "src/dir.c",         "src/expand.c",
+    "src/file.c",     "src/function.c",    "src/getopt.c",
+    "src/getopt1.c",  "src/guile.c",       "src/hash.c",
+    "src/implicit.c", "src/job.c",         "src/load.c",
+    "src/loadapi.c",  "src/main.c",        "src/misc.c",
+    "src/output.c",   "src/read.c",        "src/remake.c",
+    "src/rule.c",     "src/shuffle.c",     "src/signame.c",
+    "src/strcache.c", "src/variable.c",    "src/version.c",
+    "src/vpath.c",
     // ????????????????????????????????????????????????????????????????????????????????
-    "src/remote-stub.c",
+       "src/remote-stub.c",
 };
-const make_files_generic = make_files_common ++ [_][]const u8 {
+const make_files_generic = make_files_common ++ [_][]const u8{
     "src/posixos.c",
 };
-const make_files_windows = make_files_common ++ [_][]const u8 {
-    "src/w32/pathstuff.c", "src/w32/w32os.c", "src/w32/compat/dirent.c",
-    "src/w32/compat/posixfcn.c",
-    "src/w32/subproc/misc.c",
-    "src/w32/subproc/sub_proc.c", "src/w32/subproc/w32err.c",
-    "lib/getloadavg.c",
+const make_files_windows = make_files_common ++ [_][]const u8{
+    "src/w32/pathstuff.c",       "src/w32/w32os.c",        "src/w32/compat/dirent.c",
+    "src/w32/compat/posixfcn.c", "src/w32/subproc/misc.c", "src/w32/subproc/sub_proc.c",
+    "src/w32/subproc/w32err.c",  "lib/getloadavg.c",
 };
 
 const make_config = .{
@@ -429,7 +428,7 @@ const make_config = .{
     ._TIME_BITS = null,
     .__MINGW_USE_VC2005_COMPAT = null,
     .@"const" = .@"const",
-    .eaccess = null ,
+    .eaccess = null,
     .gid_t = null,
     .off_t = null,
     .pid_t = null,
